@@ -1,0 +1,41 @@
+# --- Entornos Virtuales y Dependencias ---
+.venv/
+venv/
+env/
+ENV/
+bin/
+lib/
+develop-eggs/
+dist/
+eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+
+# --- Cachés de Python y Compilación ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+*.ipynb
+
+# --- DATOS PESADOS (Bloqueo Crítico para este TFG) ---
+data/raw/*.csv
+data/processed/*.npy
+data/processed/*.csv
+
+# --- MODELOS E INFERENCIA ---
+# Ignoramos los escaladores temporales si los hubiera, pero PERMITIMOS los pesos finales estructurados
+models/*.pkl
+
+# --- Sistema Operativo y Editores ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

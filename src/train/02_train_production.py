@@ -8,7 +8,8 @@ import sys
 import joblib
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from src.models.architectures import HelicenoPINN
+# Importamos AMBAS arquitecturas
+from src.models.architectures import HelicenoPINN, HelicenoE2ENet
 from src.models.losses import physics_informed_loss
 
 print("🚀 Iniciando Entrenamiento de Producción (100% de los datos)...")
@@ -16,18 +17,24 @@ print("🚀 Iniciando Entrenamiento de Producción (100% de los datos)...")
 ruta_datos = 'data/processed'
 os.makedirs('models', exist_ok=True)
 
+# ====================================================================
 # 1. Cargar el 100% de la base de datos
+# ====================================================================
 X_raw = np.load(f'{ruta_datos}/X_features_64D.npy').astype(np.float32)
 Y_spec = np.load(f'{ruta_datos}/Y_espectros_150_600.npy').astype(np.float32)
 Y_params = np.load(f'{ruta_datos}/Y_Target_30_Parametros.npy').astype(np.float32)
 wl_nm = torch.tensor(np.load(f'{ruta_datos}/wl_nm_150_600.npy').astype(np.float32))
 
+# ====================================================================
 # 2. Escalar X y guardar el escalador para la inferencia futura
+# ====================================================================
 scaler = StandardScaler()
 X_tensor = torch.tensor(scaler.fit_transform(X_raw))
-joblib.dump(scaler, 'models/scaler_X.pkl') # Vital para predicciones nuevas
+joblib.dump(scaler, 'models/scaler_X.pkl') 
 
-# 3. Normalizar Y (Parámetros Físicos)
+# ====================================================================
+# 3. Normalizar Y (Parámetros Físicos para el PINN)
+# ====================================================================
 n_g = 10
 out_dim = n_g * 3
 A_COLS = [i for i in range(0, out_dim, 3)]
@@ -47,32 +54,59 @@ Y_n[:, SIG_COLS] = Y_params[:, SIG_COLS] / SIG_M
 Y_params_t = torch.tensor(Y_n)
 Y_spec_t = torch.tensor(Y_spec)
 
-# Guardar constantes de desnormalización para la inferencia
 norm_constants = {'A_M': A_M, 'MU_m': MU_m, 'MU_M': MU_M, 'SIG_M': SIG_M}
 joblib.dump(norm_constants, 'models/norm_constants.pkl')
 
-# 4. Entrenamiento
-modelo = HelicenoPINN(out_dim)
-optimizador = torch.optim.Adam(modelo.parameters(), lr=1e-4, weight_decay=1e-5)
 train_dl = DataLoader(TensorDataset(X_tensor, Y_params_t, Y_spec_t), batch_size=32, shuffle=True)
-
 epochs = 400
-modelo.train()
 
-print(f"Entrenando sobre {len(X_raw)} moléculas...")
+# ====================================================================
+# 4. ENTRENAMIENTO DEL MODELO PINN
+# ====================================================================
+print(f"\n🧠 [1/2] Entrenando Modelo PINN sobre {len(X_raw)} moléculas...")
+modelo_pinn = HelicenoPINN(out_dim)
+opt_pinn = torch.optim.Adam(modelo_pinn.parameters(), lr=1e-4, weight_decay=1e-5)
+
+modelo_pinn.train()
 for epoch in range(1, epochs + 1):
     loss_epoch = 0.0
     for bX, bYp, bYs in train_dl:
-        optimizador.zero_grad()
-        pred = modelo(bX)
+        opt_pinn.zero_grad()
+        pred = modelo_pinn(bX)
         loss = physics_informed_loss(pred, bYp, bYs, wl_nm, n_g, A_M, MU_m, MU_M, SIG_M)
         loss.backward()
-        optimizador.step()
+        opt_pinn.step()
         loss_epoch += loss.item()
         
     if epoch % 50 == 0:
-        print(f"Epoch {epoch}/{epochs} | Loss Física: {loss_epoch/len(train_dl):.4f}")
+        print(f"   Epoch {epoch}/{epochs} | Loss Física: {loss_epoch/len(train_dl):.4f}")
 
-# 5. Guardado del modelo definitivo
-torch.save(modelo.state_dict(), 'models/modelo_pinn_final.pth')
-print("\n✅ ¡Modelo de Producción entrenado y guardado en 'models/modelo_pinn_final.pth'!")
+torch.save(modelo_pinn.state_dict(), 'models/modelo_pinn_final.pth')
+print("✅ Modelo PINN guardado en 'models/modelo_pinn_final.pth'")
+
+# ====================================================================
+# 5. ENTRENAMIENTO DEL MODELO DE CAJA NEGRA (E2E)
+# ====================================================================
+print(f"\n⬛ [2/2] Entrenando Modelo de Caja Negra (E2E) sobre {len(X_raw)} moléculas...")
+modelo_e2e = HelicenoE2ENet()
+opt_e2e = torch.optim.Adam(modelo_e2e.parameters(), lr=1e-4, weight_decay=1e-5)
+criterio_mse = nn.MSELoss()
+
+modelo_e2e.train()
+for epoch in range(1, epochs + 1):
+    loss_epoch = 0.0
+    for bX, _, bYs in train_dl:  # Al E2E no le importan los parámetros (bYp)
+        opt_e2e.zero_grad()
+        pred = modelo_e2e(bX)
+        loss = criterio_mse(pred, bYs)
+        loss.backward()
+        opt_e2e.step()
+        loss_epoch += loss.item()
+        
+    if epoch % 50 == 0:
+        print(f"   Epoch {epoch}/{epochs} | Loss Espectral (MSE): {loss_epoch/len(train_dl):.4f}")
+
+torch.save(modelo_e2e.state_dict(), 'models/modelo_e2e_final.pth')
+print("✅ Modelo E2E guardado en 'models/modelo_e2e_final.pth'")
+
+print("\n🎉 ¡Todos los modelos de producción han sido entrenados y exportados con éxito!")
